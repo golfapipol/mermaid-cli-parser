@@ -104,6 +104,7 @@ function parseCommanderInt (value, _unused) {
 }
 
 async function cli () {
+  // @ts-ignore
   const commander = new Command()
   commander
     .version(pkg.version)
@@ -112,7 +113,7 @@ async function cli () {
     .addOption(new Option('-H, --height [height]', 'Height of the page').argParser(parseCommanderInt).default(600))
     .option('-i, --input <input>', 'Input mermaid file. Files ending in .md will be treated as Markdown and all charts (e.g. ```mermaid (...)``` or :::mermaid (...):::) will be extracted and generated. Use `-` to read from stdin.')
     .option('-o, --output [output]', 'Output file. It should be either md, svg, png or pdf. Optional. Default: input + ".svg"')
-    .addOption(new Option('-e, --outputFormat [format]', 'Output format for the generated image.').choices(['svg', 'png', 'pdf']).default(null, 'Loaded from the output file extension'))
+    .addOption(new Option('-e, --outputFormat [format]', 'Output format for the generated image.').choices(['svg', 'png', 'pdf', 'json']).default(null, 'Loaded from the output file extension'))
     .addOption(new Option('-b, --backgroundColor [backgroundColor]', 'Background color for pngs/svgs (not pdfs). Example: transparent, red, \'#F0F0F0\'.').default('white'))
     .option('-c, --configFile [configFile]', 'JSON configuration file for mermaid.')
     .option('-C, --cssFile [cssFile]', 'CSS file for the page.')
@@ -151,8 +152,8 @@ async function cli () {
       output = input ? (`${input}.svg`) : 'out.svg'
     }
   }
-  if (!/\.(?:svg|png|pdf|md|markdown)$/.test(output)) {
-    error('Output file must end with ".md"/".markdown", ".svg", ".png" or ".pdf"')
+  if (!/\.(?:svg|png|pdf|md|markdown|json)$/.test(output)) {
+    error('Output file must end with ".md"/".markdown", ".svg", ".png", ".json" or ".pdf"')
   }
   const outputDir = path.dirname(output)
   if (!fs.existsSync(outputDir)) {
@@ -188,7 +189,7 @@ async function cli () {
     }
     myCSS = fs.readFileSync(cssFile, 'utf-8')
   }
-
+  console.log("outputFormat!", outputFormat)
   await run(
     input, output, {
       puppeteerConfig,
@@ -218,13 +219,17 @@ async function cli () {
  *
  * @param {import("puppeteer").Browser} browser - Puppeteer Browser
  * @param {string} definition - Mermaid diagram definition
- * @param {"svg" | "png" | "pdf"} outputFormat - Mermaid output format.
+ * @param {"svg" | "png" | "pdf" | "json"} outputFormat - Mermaid output format.
  * @param {ParseMDDOptions} [opt] - Options, see {@link ParseMDDOptions} for details.
  *
- * @returns {Promise<Buffer>} The output file in bytes.
+ * @returns {Promise<Buffer | Object | null>} The output file in bytes.
  */
 async function parseMMD (browser, definition, outputFormat, opt) {
-  const { data } = await renderMermaid(browser, definition, outputFormat, opt)
+  const { data, diagram } = await renderMermaid(browser, definition, outputFormat, opt)
+  console.log("data", data, "diagram", diagram)
+  if (diagram) {
+    return diagram
+  }
   return data
 }
 
@@ -233,12 +238,13 @@ async function parseMMD (browser, definition, outputFormat, opt) {
  *
  * @param {import("puppeteer").Browser} browser - Puppeteer Browser
  * @param {string} definition - Mermaid diagram definition
- * @param {"svg" | "png" | "pdf"} outputFormat - Mermaid output format.
+ * @param {"svg" | "png" | "pdf" | "json"} outputFormat - Mermaid output format.
  * @param {ParseMDDOptions} [opt] - Options, see {@link ParseMDDOptions} for details.
- * @returns {Promise<{title: string | null, desc: string | null, data: Buffer}>} The output file in bytes,
+ * @returns {Promise<{title: string | null, desc: string | null, data: Buffer | null, diagram: Object | null}>} The output file in bytes,
  * with optional metadata.
  */
 async function renderMermaid (browser, definition, outputFormat, { viewport, backgroundColor = 'white', mermaidConfig = {}, myCSS, pdfFit, svgId } = {}) {
+  console.log("renderMermaid", definition, outputFormat, { viewport, backgroundColor, mermaidConfig, myCSS, pdfFit, svgId })
   const page = await browser.newPage()
   page.on('console', (msg) => {
     console.log(msg.text())
@@ -253,58 +259,106 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
       body.style.background = backgroundColor
     }, backgroundColor)
     await page.addScriptTag({ path: mermaidIIFEPath })
-    const metadata = await page.$eval('#container', async (container, definition, mermaidConfig, myCSS, backgroundColor, svgId) => {
-      await Promise.all(Array.from(document.fonts, (font) => font.load()))
 
-      /**
-       * @typedef {Object} GlobalThisWithMermaid
-       * We've already imported these modules in our `index.html` file (or by running `page.addScriptTag`),
-       * so that they get correctly bundled.
-       * @property {import("mermaid")["default"]} mermaid Already imported mermaid instance
-       * @property {import("@mermaid-js/mermaid-zenuml")["default"]} zenuml Already imported mermaid-zenuml instance
-       */
-      const { mermaid, zenuml } = /** @type {GlobalThisWithMermaid & typeof globalThis} */ (globalThis)
+    let metadata;
+    if (outputFormat === 'json') {
+      console.log("definition", definition)
+      // @ts-ignore
+      metadata = await page.$eval('#container', async (container, definition, mermaidConfig, myCSS, backgroundColor, svgId) => {
+        await Promise.all(Array.from(document.fonts, (font) => font.load()))
 
-      await mermaid.registerExternalDiagrams([zenuml])
-      mermaid.initialize({ startOnLoad: false, ...mermaidConfig })
-      // should throw an error if mmd diagram is invalid
-      const { svg: svgText } = await mermaid.render(svgId || 'my-svg', definition, container)
-      container.innerHTML = svgText
+        /**
+         * @typedef {Object} GlobalThisWithMermaid
+         * We've already imported these modules in our `index.html` file (or by running `page.addScriptTag`),
+         * so that they get correctly bundled.
+         * @property {import("mermaid")["default"]} mermaid Already imported mermaid instance
+         * @property {import("@mermaid-js/mermaid-zenuml")["default"]} zenuml Already imported mermaid-zenuml instance
+         */
+        // const { mermaid, zenuml } = /** @type {GlobalThisWithMermaid & typeof globalThis} */ (globalThis)
+        const { mermaid } = /** @type {GlobalThisWithMermaid & typeof globalThis} */ (globalThis)
 
-      const svg = container.getElementsByTagName?.('svg')?.[0]
-      if (svg?.style) {
-        svg.style.backgroundColor = backgroundColor
-      } else {
-        warn('svg not found. Not applying background color.')
-      }
-      if (myCSS) {
-        // add CSS as a <svg>...<style>... element
-        // see https://developer.mozilla.org/en-US/docs/Web/API/SVGStyleElement
-        const style = document.createElementNS('http://www.w3.org/2000/svg', 'style')
-        style.appendChild(document.createTextNode(myCSS))
-        svg.appendChild(style)
-      }
+        // await mermaid.registerExternalDiagrams([zenuml])
+        mermaid.initialize({ startOnLoad: false, ...mermaidConfig })
 
-      // Finds SVG metadata for accessibility purposes
-      /** SVG title */
-      let title = null
-      // If <title> exists, it must be the first child Node,
-      // see https://www.w3.org/TR/SVG11/struct.html#DescriptionAndTitleElements
-      /* global SVGTitleElement, SVGDescElement */ // These exist in browser-based code
-      if (svg.firstChild instanceof SVGTitleElement) {
-        title = svg.firstChild.textContent
-      }
-      /** SVG description. According to SVG spec, we should use the first one we find */
-      let desc = null
-      for (const svgNode of svg.children) {
-        if (svgNode instanceof SVGDescElement) {
-          desc = svgNode.textContent
+        try {
+          const diagram = await mermaid.mermaidAPI.getDiagramFromText(definition)
+          return {
+            diagram: {
+              // @ts-ignore
+              edges: diagram.db.getEdges(),
+            },
+            title: diagram?.metadata?.title || null,
+            desc: diagram?.text || null,
+            data: null
+          }
+        } catch (error) {
+          // @ts-ignore
+          console.log("error getDiagramFromText", error.stack)
+          return {
+            error: error,
+          }
         }
-      }
-      return {
-        title, desc
-      }
-    }, definition, mermaidConfig, myCSS, backgroundColor, svgId)
+
+      }, definition, mermaidConfig, myCSS, backgroundColor, svgId)
+
+    } else {
+      metadata = await page.$eval('#container', async (container, definition, mermaidConfig, myCSS, backgroundColor, svgId) => {
+        await Promise.all(Array.from(document.fonts, (font) => font.load()))
+
+        /**
+         * @typedef {Object} GlobalThisWithMermaid
+         * We've already imported these modules in our `index.html` file (or by running `page.addScriptTag`),
+         * so that they get correctly bundled.
+         * @property {import("mermaid")["default"]} mermaid Already imported mermaid instance
+         * @property {import("@mermaid-js/mermaid-zenuml")["default"]} zenuml Already imported mermaid-zenuml instance
+         */
+        const { mermaid, zenuml } = /** @type {GlobalThisWithMermaid & typeof globalThis} */ (globalThis)
+
+        await mermaid.registerExternalDiagrams([zenuml])
+        mermaid.initialize({ startOnLoad: false, ...mermaidConfig })
+        // should throw an error if mmd diagram is invalid
+        const { svg: svgText } = await mermaid.render(svgId || 'my-svg', definition, container)
+        container.innerHTML = svgText
+
+        const svg = container.getElementsByTagName?.('svg')?.[0]
+        if (svg?.style) {
+          svg.style.backgroundColor = backgroundColor
+        } else {
+          warn('svg not found. Not applying background color.')
+        }
+        if (myCSS) {
+          // add CSS as a <svg>...<style>... element
+          // see https://developer.mozilla.org/en-US/docs/Web/API/SVGStyleElement
+          const style = document.createElementNS('http://www.w3.org/2000/svg', 'style')
+          style.appendChild(document.createTextNode(myCSS))
+          svg.appendChild(style)
+        }
+
+        // Finds SVG metadata for accessibility purposes
+        /** SVG title */
+        let title = null
+        // If <title> exists, it must be the first child Node,
+        // see https://www.w3.org/TR/SVG11/struct.html#DescriptionAndTitleElements
+        /* global SVGTitleElement, SVGDescElement */ // These exist in browser-based code
+        if (svg.firstChild instanceof SVGTitleElement) {
+          title = svg.firstChild.textContent
+        }
+        /** SVG description. According to SVG spec, we should use the first one we find */
+        let desc = null
+        for (const svgNode of svg.children) {
+          if (svgNode instanceof SVGDescElement) {
+            desc = svgNode.textContent
+          }
+        }
+        return {
+          title,
+          desc,
+          data: null,
+          diagram: null
+        }
+
+      }, definition, mermaidConfig, myCSS, backgroundColor, svgId)
+    }
 
     if (outputFormat === 'svg') {
       const svgXML = await page.$eval('svg', (svg) => {
@@ -315,8 +369,10 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
         const xmlSerializer = new XMLSerializer()
         return xmlSerializer.serializeToString(svg)
       })
+      // @ts-ignore
       return {
         ...metadata,
+        diagram: null,
         data: Buffer.from(svgXML, 'utf8')
       }
     } else if (outputFormat === 'png') {
@@ -325,9 +381,16 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
         return { x: Math.floor(react.left), y: Math.floor(react.top), width: Math.ceil(react.width), height: Math.ceil(react.height) }
       })
       await page.setViewport({ ...viewport, width: clip.x + clip.width, height: clip.y + clip.height })
+      // @ts-ignore
       return {
         ...metadata,
+        diagram: null,
         data: await page.screenshot({ clip, omitBackground: backgroundColor === 'transparent' })
+      }
+    } else if (outputFormat === 'json') {
+      // @ts-ignore
+      return {
+        ...metadata,
       }
     } else { // pdf
       if (pdfFit) {
@@ -335,8 +398,10 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
           const react = svg.getBoundingClientRect()
           return { x: react.left, y: react.top, width: react.width, height: react.height }
         })
+        // @ts-ignore
         return {
           ...metadata,
+          diagram: null,
           data: await page.pdf({
             omitBackground: backgroundColor === 'transparent',
             width: (Math.ceil(clip.width) + clip.x * 2) + 'px',
@@ -345,8 +410,10 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
           })
         }
       } else {
+        // @ts-ignore
         return {
           ...metadata,
+          diagram: null,
           data: await page.pdf({
             omitBackground: backgroundColor === 'transparent'
           })
@@ -394,11 +461,12 @@ function markdownImage ({ url, title, alt }) {
  * @param {Object} [opts] - Options
  * @param {import("puppeteer").LaunchOptions} [opts.puppeteerConfig] - Puppeteer launch options.
  * @param {boolean} [opts.quiet] - If set, suppress log output.
- * @param {"svg" | "png" | "pdf"} [opts.outputFormat] - Mermaid output format.
+ * @param {"svg" | "png" | "pdf" | "json"} [opts.outputFormat] - Mermaid output format.
  * Defaults to `output` extension. Overrides `output` extension if set.
  * @param {ParseMDDOptions} [opts.parseMMDOptions] - Options to pass to {@link parseMMDOptions}.
  */
-async function run (input, output, { puppeteerConfig = {}, quiet = false, outputFormat, parseMMDOptions } = {}) {
+async function run (input, output, { puppeteerConfig = {}, quiet = true, outputFormat, parseMMDOptions } = {}) {
+  console.log("run!!!", outputFormat)
   /**
    * Logs the given message to stdout, unless `quiet` is set to `true`.
    *
@@ -422,17 +490,19 @@ async function run (input, output, { puppeteerConfig = {}, quiet = false, output
     if (!outputFormat) {
       const outputFormatFromFilename =
         /**
-         * @type {"md" | "markdown" | "svg" | "png" | "pdf"}
+         * @type {"md" | "markdown" | "svg" | "png" | "pdf" | "json"}
          */ (path.extname(output).replace('.', ''))
       if (outputFormatFromFilename === 'md' || outputFormatFromFilename === 'markdown') {
         // fallback to svg in case no outputFormat is given and output file is MD
         outputFormat = 'svg'
+      } else if (outputFormatFromFilename === 'json') {
+        outputFormat = 'json'
       } else {
         outputFormat = outputFormatFromFilename
       }
     }
-    if (!/(?:svg|png|pdf)$/.test(outputFormat)) {
-      throw new Error('Output format must be one of "svg", "png" or "pdf"')
+    if (!/(?:svg|png|pdf|json)$/.test(outputFormat)) {
+      throw new Error('Output format must be one of "svg", "png", "json" or "pdf"')
     }
 
     const definition = await getInputData(input)
@@ -452,20 +522,35 @@ async function run (input, output, { puppeteerConfig = {}, quiet = false, output
          * @type {string}
          */
         const outputFile = output.replace(
-          /(\.(md|markdown|png|svg|pdf))$/,
+          /(\.(md|markdown|png|svg|pdf|json))$/,
           `-${imagePromises.length + 1}$1`
         ).replace(/\.(md|markdown)$/, `.${outputFormat}`)
         const outputFileRelative = `./${path.relative(path.dirname(path.resolve(output)), path.resolve(outputFile))}`
+        console.log("outputFileRelative", outputFormat)
 
         const imagePromise = (async () => {
-          const { title, desc, data } = await renderMermaid(browser, mermaidDefinition, outputFormat, parseMMDOptions)
-          await fs.promises.writeFile(outputFile, data)
-          info(` ✅ ${outputFileRelative}`)
+          console.log("imagePromise outputFormat", outputFormat)
+          const { title, desc, data, diagram } = await renderMermaid(browser, mermaidDefinition, outputFormat, parseMMDOptions)
 
-          return {
-            url: outputFileRelative,
-            title,
-            alt: desc
+          if (diagram !== null) {
+            await fs.promises.writeFile(outputFile, JSON.stringify({
+              // @ts-ignore
+              edges: diagram.db.getEdges(),
+              // @ts-ignore
+              blocks: diagram.db.getBlocks(),
+            }))
+            info(` ✅ ${outputFileRelative}`)
+          } else if (data !== null) {
+            await fs.promises.writeFile(outputFile, data)
+            info(` ✅ ${outputFileRelative}`)
+
+            return {
+              url: outputFileRelative,
+              title,
+              alt: desc
+            }
+          } else {
+            throw new Error('Failed to render mermaid diagram')
           }
         })()
         imagePromises.push(imagePromise)
@@ -494,10 +579,18 @@ async function run (input, output, { puppeteerConfig = {}, quiet = false, output
         info(` ✅ ${output}`)
       }
     } else {
+      console.log("Generating single mermaid chart", outputFormat)
       info('Generating single mermaid chart')
       browser = await puppeteer.launch(puppeteerConfig)
       const data = await parseMMD(browser, definition, outputFormat, parseMMDOptions)
-      await fs.promises.writeFile(output, data)
+      console.log("data", data)
+      if (Buffer.isBuffer(data)) {
+        // @ts-ignore
+        await fs.promises.writeFile(output, data)
+      } else {
+        // @ts-ignore
+        await fs.promises.writeFile(output, JSON.stringify(data))
+      }
     }
   } finally {
     await browser?.close?.()
