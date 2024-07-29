@@ -4,6 +4,8 @@ import fs from 'fs'
 import path from 'path'
 import puppeteer from 'puppeteer'
 import url from 'url'
+import {findAllPaths} from './custom.js'
+import {createNewDiagram} from './createDiagram.js'
 
 // importing JSON is still experimental in Node.JS https://nodejs.org/docs/latest-v16.x/api/esm.html#json-modules
 import { createRequire } from 'module'
@@ -244,7 +246,6 @@ async function parseMMD (browser, definition, outputFormat, opt) {
  * with optional metadata.
  */
 async function renderMermaid (browser, definition, outputFormat, { viewport, backgroundColor = 'white', mermaidConfig = {}, myCSS, pdfFit, svgId } = {}) {
-  console.log("renderMermaid", definition, outputFormat, { viewport, backgroundColor, mermaidConfig, myCSS, pdfFit, svgId })
   const page = await browser.newPage()
   page.on('console', (msg) => {
     console.log(msg.text())
@@ -262,7 +263,6 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
 
     let metadata;
     if (outputFormat === 'json') {
-      console.log("definition", definition)
       // @ts-ignore
       metadata = await page.$eval('#container', async (container, definition, mermaidConfig, myCSS, backgroundColor, svgId) => {
         await Promise.all(Array.from(document.fonts, (font) => font.load()))
@@ -282,8 +282,17 @@ async function renderMermaid (browser, definition, outputFormat, { viewport, bac
 
         try {
           const diagram = await mermaid.mermaidAPI.getDiagramFromText(definition)
+          // wait for timeout 15 seconds
+          // await new Promise((resolve) => {
+          //   setTimeout(() => {
+          //       resolve("15 seconds have passed!");
+          //   }, 15000);
+          // })
+          // debugger
           return {
             diagram: {
+              // @ts-ignore
+              vertices: diagram.db.getVertices(),
               // @ts-ignore
               edges: diagram.db.getEdges(),
             },
@@ -466,7 +475,6 @@ function markdownImage ({ url, title, alt }) {
  * @param {ParseMDDOptions} [opts.parseMMDOptions] - Options to pass to {@link parseMMDOptions}.
  */
 async function run (input, output, { puppeteerConfig = {}, quiet = true, outputFormat, parseMMDOptions } = {}) {
-  console.log("run!!!", outputFormat)
   /**
    * Logs the given message to stdout, unless `quiet` is set to `true`.
    *
@@ -529,7 +537,6 @@ async function run (input, output, { puppeteerConfig = {}, quiet = true, outputF
         console.log("outputFileRelative", outputFormat)
 
         const imagePromise = (async () => {
-          console.log("imagePromise outputFormat", outputFormat)
           const { title, desc, data, diagram } = await renderMermaid(browser, mermaidDefinition, outputFormat, parseMMDOptions)
 
           if (diagram !== null) {
@@ -579,17 +586,21 @@ async function run (input, output, { puppeteerConfig = {}, quiet = true, outputF
         info(` ✅ ${output}`)
       }
     } else {
-      console.log("Generating single mermaid chart", outputFormat)
       info('Generating single mermaid chart')
       browser = await puppeteer.launch(puppeteerConfig)
       const data = await parseMMD(browser, definition, outputFormat, parseMMDOptions)
-      console.log("data", data)
       if (Buffer.isBuffer(data)) {
         // @ts-ignore
         await fs.promises.writeFile(output, data)
       } else {
         // @ts-ignore
-        await fs.promises.writeFile(output, JSON.stringify(data))
+        const {edges, vertices} = data
+        const possiblePaths = await findAllPaths(edges)
+        console.log("possiblePaths", possiblePaths)
+        const flows = createNewDiagram(possiblePaths, vertices)
+        for (let i = 0; i < flows.length; i++) {
+          await fs.promises.writeFile(`flow-${i}.mmd`, flows[i])
+        }
       }
     }
   } finally {
